@@ -10,13 +10,16 @@
 # =======================================================================
 
 library(dplyr) #as.data.frame(), group_by(), mutate(), filter(), arrange(), summarise()
+library(tidyr) #crossing
 library(ggplot2)
 library(lubridate) #time parsing (ymd_hms)
 library(data.table) #roll = "nearest"
 library(zoo) #rollapply, rollmean
 library(dunn.test) #Kruskal-Wallis tests
+library(stringr) #str_detect
+library(patchwork) #plot_layout
 
-setwd("C:/Your/Root/Working/Directory/")
+setwd("C:/Users/asnog/Documents/PhD-MareMadeira/TemperatureLogger/")
 
 #. =========================================================================
 # 1. Loading loggers' data -----------------------------------------------------
@@ -66,7 +69,6 @@ loggers_all <- loggers_all %>%
 #.------------------------------------------------------------------------------
 # Exploratory - Visualization of the temperature per time ----------------------
 #.------------------------------------------------------------------------------
-#MAKE THIS BETTER
 # Plot function
 plot_logger_ts <- function(df, dive_name) {
   df %>% 
@@ -590,9 +592,9 @@ phase_summary <- phase_summary %>%
 paired_all <- paired_all %>%
   mutate(
     logger = recode(logger,
-                    "EnvLogger01" = "EnvMeso01",
-                    "EnvLogger02" = "EnvMeso02",
-                    "EnvLogger03" = "EnvMeso03"
+                    "EnvLogger01" = "EnvTide01",
+                    "EnvLogger02" = "EnvTide02",
+                    "EnvLogger03" = "EnvTide03"
     )
   )
 
@@ -952,11 +954,11 @@ print(wilcox_depl3)
 
 
 
-#2.2. Comparison for Deployment #4 ( 2 Deep01 vs 3 Meso at 200-500m)
+#2.2. Comparison for Deployment #4 ( 2 Deep01 vs 3 Tide at 200-500m)
 
 # 1. Add model_type to main dataframe
 paired_analysis <- paired_analysis %>%
-  mutate(model_type = if_else(str_detect(logger, "EnvMeso"), "EnvMeso", "EnvDeep"))
+  mutate(model_type = if_else(str_detect(logger, "EnvTide"), "EnvTide", "EnvDeep"))
 
 # Filter for Deployment 4 
 depl4_data <- paired_analysis %>% filter(deployment == "Depl_4")
@@ -992,7 +994,7 @@ depl4_comparison <- bind_rows(depl4_individual_stats, depl4_type_stats)
 
 #2.2.1 TESTING LOGGER TYPE - Wilcoxon Rank Sum test
 wilcox_depl4 <- wilcox.test(abs(delta_T) ~ model_type, 
-                            data = depl4_data) #%>% mutate(model_type = if_else(str_detect(logger, "EnvMeso"), "EnvMeso", "EnvDeep")))
+                            data = depl4_data) #%>% mutate(model_type = if_else(str_detect(logger, "EnvTide"), "EnvTide", "EnvDeep")))
 print(wilcox_depl4)
 
 # Optional: Visualize the comparison to support the test result
@@ -1027,7 +1029,7 @@ dunn_depl4 <- dunn.test(abs(depl4_data$delta_T),
                         method="bh")
 print(dunn_depl4)
 # -------------------------------------------------------
-#FIY overall mae values per logger
+#FYI overall mae values per logger
 mae_summary <- paired_analysis %>%
   group_by(logger) %>%
   summarise(
@@ -1137,8 +1139,8 @@ plot_temp_profile <- function(depl_id) {
   logger_colors <- c(
     "EnvDeep Downcasts" = "#C6E309",
     "EnvDeep Upcasts"   = "#95bf25",
-    "EnvMeso Downcasts" = "#C57890",
-    "EnvMeso Upcasts"   = "#993357")
+    "EnvTide Downcasts" = "#C57890",
+    "EnvTide Upcasts"   = "#993357")
   ggplot(plot_df, aes(y = p_bin, x = mean_val, color = category, fill = category)) +
     geom_ribbon(aes(xmin = mean_val - sd_val, xmax = mean_val + sd_val),
                 alpha = 0.2, color = NA) +
@@ -1202,8 +1204,8 @@ plot_delta_profile <- function(depl_id) {
   logger_colors <- c(
     "EnvDeep Downcasts" = "#C6E309",
     "EnvDeep Upcasts"   = "#95bf25",
-    "EnvMeso Downcasts" = "#D18E95",
-    "EnvMeso Upcasts"   = "#772B4E" 
+    "EnvTide Downcasts" = "#D18E95",
+    "EnvTide Upcasts"   = "#772B4E" 
   )
   ggplot(plot_df, aes(y = p_bin, x = mean_val, color = category, fill = category)) +
     geom_vline(xintercept = 0, linetype = "dashed", linewidth = 1, color = "#333333") +
@@ -1363,3 +1365,242 @@ plot_delta_profile_rov <- function(df) {
 
 
 plot_delta_profile_rov (rov_data)
+
+
+#. ====================================================================================================================
+# 13. Exploratory stats by LOGGER MODEL --------------------------------------------------------------------------
+#. ====================================================================================================================
+
+#Prepare data
+#Make model a factor and order it:
+paired_model <- paired_analysis %>%
+  mutate(
+    model_type = if_else(str_detect(logger, "EnvTide"), "EnvTide", "EnvDeep"),
+    model_type = factor(model_type, levels = c("EnvDeep", "EnvTide"))
+  )
+
+phase_cols <- c(
+  "Descent" = "#8D1C06FF",
+  "Ascent"  = "#2C3778FF",
+  "Bottom"  = "#DABD61FF"
+)
+
+# =============================================================================
+# HISTOGRAM BY MODEL =========================================================
+# =============================================================================
+
+#Stats
+stats_hist_model <- paired_model %>%
+  group_by(model_type, phase) %>%
+  summarise(
+    bias = mean(delta_T, na.rm = TRUE),
+    sd   = sd(delta_T, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0("\u03B4 = ", round(bias, 2), " (\u00B1", round(sd, 2), ")"))
+
+#plot
+make_histogram <- function(model_name, xlim = c(-4, 4), ylim = c(0, 0.17)){
+  x_span <- xlim[2] - xlim[1]
+  y_span <- ylim[2] - ylim[1]
+  text_data <- stats_hist_model %>%
+    filter(model_type == model_name) %>%
+    mutate(
+      x_pos = xlim[1] - 1.6 * y_span,
+      y_pos = case_when(
+        phase == "Descent" ~ ylim[2] - 0.05 * y_span,
+        phase == "Bottom"  ~ ylim[2] - 0.26 * y_span,
+        phase == "Ascent"  ~ ylim[2] - 0.16 * y_span
+      )
+    )
+  ggplot(paired_model %>% filter(model_type == model_name), aes(x = delta_T, fill = phase)) +
+    geom_histogram(
+      aes(y = after_stat(count) / sum(after_stat(count))),
+      bins = 65, alpha = 0.6, position = "identity", color = "white", linewidth = 0.2
+    ) +
+    geom_vline(xintercept = 0, alpha = 0.6, linetype = "longdash", color = "#333333", linewidth = 0.6) +
+    geom_text(
+      data = text_data,
+      aes(x = x_pos, y = y_pos, label = label, color = phase),
+      inherit.aes = FALSE, hjust = 0, size = 4.5, fontface = "bold", show.legend = FALSE
+    ) +
+    scale_fill_manual(values = phase_cols) +
+    scale_color_manual(values = phase_cols) +
+    scale_y_continuous(labels = scales::percent_format(), breaks = seq(0, ylim[2], by = 0.05)) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    labs(
+      title = paste(model_name, "Logger - \u0394T Histogram"),
+      x = expression(Delta*T~"(°C)"),
+      y = "Frequency (%)"
+    ) +
+    guides(color = guide_legend(title = "Phase"), fill = guide_legend(title = "Phase")) +
+    theme_bw(base_size = 16) +
+    theme(strip.background = element_rect(fill = "grey90"))
+}
+
+# =============================================================================
+# GRADIENT STATS
+# =============================================================================
+stats_grad_model <- paired_model %>%
+  filter(!is.na(rate_temp_change)) %>%
+  group_by(model_type, phase) %>%
+  summarise(
+    r_sq = cor(rate_temp_change, delta_T, use = "complete.obs")^2,
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0("R² = ", round(r_sq, 2)))
+
+# =============================================================================
+# GRADIENT FUNCTION
+# =============================================================================
+make_gradient <- function(model_name, xlim = c(-0.2, 0.2), ylim = c(-10, 10)){
+  x_span <- xlim[2] - xlim[1]
+  y_span <- ylim[2] - ylim[1]
+  
+  # Custom positional mappings for temperature change rates
+  text_data <- stats_grad_model %>%
+    filter(model_type == model_name) %>%
+    mutate(
+      x_pos = case_when(
+        phase == "Bottom"  ~ xlim[1] + 0.75 * x_span,   # Center/Right
+        phase == "Descent" ~ xlim[1] + 0.03 * x_span,   # Top-Left
+        phase == "Ascent"  ~ xlim[2] - 0.02 * x_span    # Bottom-Right
+      ),
+      y_pos = case_when(
+        phase == "Bottom"  ~ ylim[2] - 0.40 * y_span,   # Center/Right
+        phase == "Descent" ~ ylim[2] - 0.02 * y_span,   # Top-Left
+        phase == "Ascent"  ~ ylim[1] + 0.02 * y_span    # Bottom-Right
+      ),
+      hjust = case_when(
+        phase == "Bottom"  ~ 0.5,
+        phase == "Descent" ~ 0,
+        phase == "Ascent"  ~ 1
+      )
+    )
+  # Arrange data so "Bottom" rows are at the end (plotted last = on top)
+  plot_data <- paired_model %>% 
+    filter(model_type == model_name, !is.na(rate_temp_change)) %>%
+    arrange(factor(phase, levels = c("Descent", "Ascent", "Bottom")))
+  
+  ggplot(
+    paired_model %>% filter(model_type == model_name, !is.na(rate_temp_change)),
+    aes(x = rate_temp_change, y = delta_T, color = phase)
+  ) +
+    geom_point(alpha = 0.25, size = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dotted") +
+    geom_vline(xintercept = 0, linetype = "dotted") +
+    geom_text(
+      data = text_data,
+      aes(x = x_pos, y = y_pos, label = label, color = phase, hjust = hjust),
+      inherit.aes = FALSE, size = 4.5, fontface = "bold", show.legend = FALSE
+    ) +
+    scale_color_manual(values = phase_cols) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    labs(
+      title = paste(model_name, "- Temp Change Rate"),
+      x = expression(paste("Rate of Temp Change (", degree,"C/s)")),
+      y = expression(Delta*T)
+    ) +
+    guides(color = guide_legend(title = "Phase"), fill = guide_legend(title = "Phase")) +
+    theme_bw(base_size = 16)
+}
+
+# =============================================================================
+# SPEED STATS
+# =============================================================================
+stats_speed_model <- paired_model %>%
+  filter(!is.na(vertical_speed)) %>%
+  group_by(model_type, phase) %>%
+  summarise(
+    r_sq = cor(vertical_speed, delta_T, use = "complete.obs")^2,
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0("R² = ", round(r_sq, 2)))
+
+# =============================================================================
+# SPEED FUNCTION
+# =============================================================================
+make_speed <- function(model_name, xlim = c(-1.5, 1.5), ylim = c(-6, 6)){
+  x_span <- xlim[2] - xlim[1]
+  y_span <- ylim[2] - ylim[1]
+  # Custom positional mappings for vertical profiles
+  text_data <- stats_speed_model %>%
+    filter(model_type == model_name) %>%
+    mutate(
+      x_pos = case_when(
+        phase == "Descent" ~ xlim[2] - 0.03 * x_span,   # Almost Top-Right
+        phase == "Bottom"  ~ xlim[1] + 0.20 * x_span,   # Center-Top
+        phase == "Ascent"  ~ xlim[1] + 0.005 * x_span    # Almost Bottom-Left
+      ),
+      y_pos = case_when(
+        phase == "Descent" ~ ylim[2] - 0.02 * y_span,   # Almost Top-right
+        phase == "Bottom"  ~ ylim[2] - 0.25 * y_span,   # Center-Top
+        phase == "Ascent"  ~ ylim[1] + 0.01 * y_span    # Almost Bottom-Left
+      ),
+      hjust = case_when(
+        phase == "Descent" ~ 1,
+        phase == "Bottom"  ~ 0.5,
+        phase == "Ascent"  ~ 0
+      )
+    )
+  # Arrange data so "Bottom" rows are at the end (plotted last = on top)
+  plot_data <- paired_model %>% 
+    filter(model_type == model_name, !is.na(vertical_speed)) %>%
+    arrange(factor(phase, levels = c("Descent", "Ascent", "Bottom")))
+  ggplot(
+    paired_model %>% filter(model_type == model_name, !is.na(vertical_speed)),
+    aes(x = vertical_speed, y = delta_T, color = phase)
+  ) +
+    geom_point(alpha = 0.25, size = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dotted") +
+    geom_vline(xintercept = 0, linetype = "dotted") +
+    geom_text(
+      data = text_data,
+      aes(x = x_pos, y = y_pos, label = label, color = phase, hjust = hjust),
+      inherit.aes = FALSE, size = 4.5, fontface = "bold", show.legend = FALSE
+    ) +
+    scale_color_manual(values = phase_cols) +
+    coord_cartesian(xlim = xlim, ylim = ylim) +
+    labs(
+      title = paste(model_name, " - Vertical Speed"),
+      x = "Vertical Speed (m/s)",
+      y = expression(Delta*T)
+    ) +
+    guides(color = guide_legend(title = "Phase"), fill = guide_legend(title = "Phase")) +
+    theme_bw(base_size = 16)
+}
+
+# =============================================================================
+# CREATE THE 6 PANELS
+# =============================================================================
+# ---- EnvDeep Panels ----
+p_hist_deep  <- make_histogram("EnvDeep", xlim = c(-4.5, 4.5), ylim = c(0, 0.10))
+p_grad_deep  <- make_gradient("EnvDeep",  xlim = c(-0.2, 0.2),   ylim = c(-10, 10)) 
+p_speed_deep <- make_speed("EnvDeep",     xlim = c(-2, 2),       ylim = c(-5.5, 5.5))
+
+# ---- EnvTide Panels ----
+p_hist_Tide  <- make_histogram("EnvTide", xlim = c(-2, 2),       ylim = c(0, 0.10))
+p_grad_Tide  <- make_gradient("EnvTide",  xlim = c(-0.07, 0.07), ylim = c(-2, 2))
+p_speed_Tide <- make_speed("EnvTide",     xlim = c(-1.8, 1.8),   ylim = c(-2, 2))
+
+# =============================================================================
+# PATCHWORK LAYOUT COMPILATION
+# =============================================================================
+final_model_panel <- (
+  p_hist_deep + p_grad_deep + p_speed_deep
+) / (
+  p_hist_Tide + p_grad_Tide + p_speed_Tide
+) +
+  plot_layout(guides = "collect") & 
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.justification = "center",
+    axis.title.x = element_text(margin = margin(t = 5)), 
+    axis.title.y = element_text(margin = margin(r = 5))
+  )
+
+final_model_panel
+
